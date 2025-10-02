@@ -15,7 +15,10 @@ DEFAULT_HEADERS = {
 }
 
 BLOCK_PATTERNS = (
-    "Incapsula_Resource", "Request unsuccessful", "captcha", "iframe id="main-iframe""
+    "Incapsula_Resource",
+    "Request unsuccessful",
+    "captcha",
+    "iframe id=\"main-iframe\"",
 )
 
 class TournamentModel(BaseModel):
@@ -60,20 +63,19 @@ def _extract_two_dates(text: str):
         return _parse_date(found[0]), _parse_date(found[1])
     return (None, None)
 
-def fetch_html(url: str, timeout: int = 20) -> str:
+def fetch_html(url: str, timeout: int = 25) -> str:
     r = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
     r.raise_for_status()
     html = r.text
     low = html.lower()
-    if any(p.lower() in low for p in BLOCK_PATTERNS) or "main-iframe" in low:
+    if any(p.lower() in low for p in BLOCK_PATTERNS):
         html = render_page(url, timeout_ms=timeout*1000)
     return html
 
 def parse_tournament_html(html: str, source_url: str) -> TournamentModel:
     soup = BeautifulSoup(html, "html.parser")
-    def txt(sel: str): 
-        el = soup.select_one(sel); 
-        return el.get_text(strip=True) if el else None
+    def txt(sel: str):
+        el = soup.select_one(sel); return el.get_text(strip=True) if el else None
     def meta(prop: str):
         el = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
         return el.get("content", "").strip() if el and el.get("content") else None

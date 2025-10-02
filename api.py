@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from db import init_db, SessionLocal, list_tournaments, upsert_tournament
 from scraper import scrape_tournament
 
-app = FastAPI(title="PlanX ITF API", version="15.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="PlanX ITF API", version="16.0.0")
+app.add_middleware(CORSSupport := CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
 def _startup(): init_db()

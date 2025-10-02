@@ -32,7 +32,7 @@ class Tournament(Base):
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def upsert_tournament(session, data: dict) -> "Tournament":
+def upsert_tournament(session, data: dict):
     obj = session.query(Tournament).filter(
         Tournament.name==data.get("name"),
         Tournament.start_date==data.get("start_date"),
