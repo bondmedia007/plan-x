@@ -1,10 +1,13 @@
-# planx-itf-v14
-Improved scraper with JSON-LD parsing and Render-ready commands.
+# planx-itf-v15 (Playwright)
 
-## Render (Python service)
-Build Command: `pip install -r requirements.txt`
-Start Command: `uvicorn api:app --host 0.0.0.0 --port $PORT`
-Health Check: `/health`
+Scrapes ITF pages reliably by rendering JS via Playwright.
 
-## Render (Docker)
-Use the included Dockerfile. Health Check `/health`.
+## Render Deployment (Docker)
+- Create a **Docker** Web Service.
+- Health Check: `/health`
+- Optional persistence: add `DATABASE_URL=sqlite:////data/planx_itf.db` and mount `/data`.
+
+## Endpoints
+- `GET /health`
+- `POST /scrape?seed_url=...`
+- `GET /tournaments?limit=50`

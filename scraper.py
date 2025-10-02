@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
+from renderer import render_page
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -12,6 +13,10 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive",
     "Referer": "https://www.google.com/",
 }
+
+BLOCK_PATTERNS = (
+    "Incapsula_Resource", "Request unsuccessful", "captcha", "iframe id="main-iframe""
+)
 
 class TournamentModel(BaseModel):
     name: str = Field(...)
@@ -40,33 +45,43 @@ def _parse_date(text: str) -> Optional[datetime]:
         except ValueError: pass
     m = re.search(r"(\d{1,2})[\-/ ](\d{1,2})[\-/ ](\d{2,4})", text)
     if m:
-        d,mth,y = m.groups()
-        y = y if len(y)==4 else f"20{y}"
-        try: return datetime.strptime(f"{d}/{mth}/{y}", "%d/%m/%Y")
+        d,mn,y = m.groups(); y = y if len(y)==4 else f"20{y}"
+        try: return datetime.strptime(f"{d}/{mn}/{y}", "%d/%m/%Y")
         except ValueError: return None
     return None
 
-def _bool_from_text(text: str) -> Optional[bool]:
-    if not text: return None
-    t = text.lower()
-    if any(x in t for x in ["yes","available","on site","onsite","provided"]): return True
-    if any(x in t for x in ["no","not available","none"]): return False
-    return None
+def _extract_two_dates(text: str):
+    if not text: return (None, None)
+    t = text.replace("–","-").replace("—","-")
+    pats = [r"(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})", r"(\d{1,2}/\d{1,2}/20\d{2})", r"(20\d{2}-\d{2}-\d{2})"]
+    found = []
+    for p in pats: found += re.findall(p, t)
+    if len(found) >= 2:
+        return _parse_date(found[0]), _parse_date(found[1])
+    return (None, None)
 
 def fetch_html(url: str, timeout: int = 20) -> str:
-    r = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout); r.raise_for_status(); return r.text
+    r = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
+    r.raise_for_status()
+    html = r.text
+    low = html.lower()
+    if any(p.lower() in low for p in BLOCK_PATTERNS) or "main-iframe" in low:
+        html = render_page(url, timeout_ms=timeout*1000)
+    return html
 
 def parse_tournament_html(html: str, source_url: str) -> TournamentModel:
     soup = BeautifulSoup(html, "html.parser")
     def txt(sel: str): 
         el = soup.select_one(sel); 
         return el.get_text(strip=True) if el else None
+    def meta(prop: str):
+        el = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+        return el.get("content", "").strip() if el and el.get("content") else None
 
     name=grade=category=city=country=venue=gender=surface=None
     start_date=end_date=qualifying_start=qualifying_end=None
     latitude=longitude=None; itf_link=None; has_physio=None
 
-    # JSON-LD
     try:
         for tag in soup.select("script[type='application/ld+json']"):
             raw = (tag.string or "").strip()
@@ -87,39 +102,45 @@ def parse_tournament_html(html: str, source_url: str) -> TournamentModel:
                             country = addr.get("addressCountry") or country
     except Exception: pass
 
-    # Fallbacks
-    name = name or (soup.title.get_text(strip=True) if soup.title else None)
-    grade = grade or txt(".event-meta .grade, .tournament-meta__grade, [data-field='grade']")
-    category = category or txt(".event-meta .category, .tournament-meta__category, [data-field='category']")
-    surface = surface or txt(".event-surface, .tournament-surface, [data-field='surface']")
+    name = name or meta("og:title") or (soup.title.get_text(strip=True) if soup.title else None)
+    desc = meta("description") or meta("og:description") or ""
+    if not start_date and not end_date:
+        d1, d2 = _extract_two_dates(desc)
+        start_date = d1 or start_date; end_date = d2 or end_date
 
+    grade = grade or txt("[data-field='grade'], .tournament-meta__grade")
+    category = category or txt("[data-field='category'], .tournament-meta__category")
+    surface = surface or txt("[data-field='surface'], .tournament-surface")
     s_text = txt("[data-field='start-date'], [data-field='startDate'], .event-dates__start, .start-date")
     e_text = txt("[data-field='end-date'], [data-field='endDate'], .event-dates__end, .end-date")
     start_date = start_date or (_parse_date(s_text) if s_text else None)
-    end_date = end_date or (_parse_date(e_text) if e_text else None)
-
-    city = city or txt(".event-location .city, .tournament-location__city, [data-field='city']")
-    country = country or txt(".event-location .country, .tournament-location__country, [data-field='country']")
-    venue = venue or txt(".event-location .venue, .tournament-venue, [data-field='venue']")
+    end_date   = end_date   or (_parse_date(e_text) if e_text else None)
+    city = city or txt("[data-field='city'], .tournament-location__city")
+    country = country or txt("[data-field='country'], .tournament-location__country")
+    venue = venue or txt("[data-field='venue'], .tournament-venue")
 
     if not itf_link:
         a = soup.select_one("a[href*='itftennis.com']"); itf_link = a.get("href") if a else None
 
-    q_s = txt(".qualifying-start, [data-field='qualifying-start'], [data-field='qualifyingStart']")
-    q_e = txt(".qualifying-end, [data-field='qualifying-end'], [data-field='qualifyingEnd']")
-    qualifying_start = _parse_date(q_s) if q_s else None
-    qualifying_end = _parse_date(q_e) if q_e else None
+    qs = txt("[data-field='qualifying-start'], .qualifying-start")
+    qe = txt("[data-field='qualifying-end'], .qualifying-end")
+    qualifying_start = _parse_date(qs) if qs else None
+    qualifying_end = _parse_date(qe) if qe else None
 
     return TournamentModel(
-        name=name or "Unknown Tournament", grade=grade, category=category,
-        start_date=start_date, end_date=end_date, city=city, country=country, venue=venue,
-        latitude=latitude, longitude=longitude, has_physio=has_physio, gender=gender,
+        name=name or "Unknown Tournament",
+        grade=grade, category=category,
+        start_date=start_date, end_date=end_date,
+        city=city, country=country, venue=venue,
+        latitude=latitude, longitude=longitude,
+        has_physio=has_physio, gender=gender,
         itf_link=itf_link, qualifying_start=qualifying_start, qualifying_end=qualifying_end,
         surface=surface, notes=f"Scraped from: {source_url}",
     )
 
 def scrape_tournament(url: str) -> Dict[str, Any]:
-    html = fetch_html(url); m = parse_tournament_html(html, url)
+    html = fetch_html(url)
+    m = parse_tournament_html(html, url)
     to_date = lambda dt: None if dt is None else dt.date()
     return {"name": m.name, "grade": m.grade, "category": m.category,
             "start_date": to_date(m.start_date), "end_date": to_date(m.end_date),

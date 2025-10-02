@@ -1,8 +1,8 @@
 fastapi
 uvicorn
-requests
 beautifulsoup4
-pandas
-sqlalchemy
 pydantic
+sqlalchemy
+requests
 python-dotenv
+playwright==1.46.0

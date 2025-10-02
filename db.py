@@ -32,14 +32,16 @@ class Tournament(Base):
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def upsert_tournament(session, data: dict) -> Tournament:
-    obj = session.query(Tournament).filter(Tournament.name==data.get("name"),
-                                           Tournament.start_date==data.get("start_date"),
-                                           Tournament.city==data.get("city")).first()
+def upsert_tournament(session, data: dict) -> "Tournament":
+    obj = session.query(Tournament).filter(
+        Tournament.name==data.get("name"),
+        Tournament.start_date==data.get("start_date"),
+        Tournament.city==data.get("city"),
+    ).first()
     if obj is None:
         obj = Tournament(**data); session.add(obj)
     else:
-        for k,v in data.items(): setattr(obj,k,v)
+        for k, v in data.items(): setattr(obj, k, v)
     session.commit(); session.refresh(obj); return obj
 
 def list_tournaments(session, limit=100, offset=0):
