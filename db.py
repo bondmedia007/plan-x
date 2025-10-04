@@ -10,39 +10,38 @@ Base = declarative_base()
 class Tournament(Base):
     __tablename__ = "tournaments"
     id = Column(Integer, primary_key=True, index=True)
+
     name = Column(String(255), nullable=False)
     grade = Column(String(50), nullable=True)
-    category = Column(String(100), nullable=True)
-    start_date = Column(Date, nullable=True)
-    end_date = Column(Date, nullable=True)
+    year = Column(Integer, nullable=True)
     city = Column(String(255), nullable=True)
+    country_code = Column(String(3), nullable=True)
     country = Column(String(255), nullable=True)
-    venue = Column(String(255), nullable=True)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
-    has_physio = Column(Boolean, nullable=True)
-    gender = Column(String(50), nullable=True)
-    itf_link = Column(Text, nullable=True)
-    qualifying_start = Column(Date, nullable=True)
-    qualifying_end = Column(Date, nullable=True)
+
+    start_date = Column(Date, nullable=True)
+    end_date   = Column(Date, nullable=True)
     surface = Column(String(50), nullable=True)
+    venue   = Column(String(255), nullable=True)
+
+    itf_link = Column(Text, nullable=False)
+    apply_url = Column(Text, nullable=False)
+
     notes = Column(Text, nullable=True)
-    __table_args__ = (UniqueConstraint("name","start_date","city", name="uq_tournament_identity"),)
+
+    __table_args__ = (UniqueConstraint("itf_link", name="uq_itf_link_unique"),)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-def upsert_tournament(session, data: dict):
-    obj = session.query(Tournament).filter(
-        Tournament.name==data.get("name"),
-        Tournament.start_date==data.get("start_date"),
-        Tournament.city==data.get("city"),
-    ).first()
+def upsert_by_link(session, data: dict):
+    obj = session.query(Tournament).filter(Tournament.itf_link==data["itf_link"]).first()
     if obj is None:
         obj = Tournament(**data); session.add(obj)
     else:
-        for k, v in data.items(): setattr(obj, k, v)
+        for k,v in data.items(): setattr(obj,k,v)
     session.commit(); session.refresh(obj); return obj
 
 def list_tournaments(session, limit=100, offset=0):
-    return session.query(Tournament).order_by(Tournament.start_date.asc().nulls_last()).offset(offset).limit(limit).all()
+    return session.query(Tournament).order_by(Tournament.start_date.asc().nulls_last(),
+                                              Tournament.end_date.asc().nulls_last(),
+                                              Tournament.name.asc()).offset(offset).limit(limit).all()

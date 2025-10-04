@@ -1,10 +1,9 @@
 from __future__ import annotations
-import re, json, requests
+import re, requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
-from renderer import render_page
+import pycountry
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -13,32 +12,6 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive",
     "Referer": "https://www.google.com/",
 }
-
-BLOCK_PATTERNS = (
-    "Incapsula_Resource",
-    "Request unsuccessful",
-    "captcha",
-    "iframe id=\"main-iframe\"",
-)
-
-class TournamentModel(BaseModel):
-    name: str = Field(...)
-    grade: Optional[str] = None
-    category: Optional[str] = None
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    city: Optional[str] = None
-    country: Optional[str] = None
-    venue: Optional[str] = None
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-    has_physio: Optional[bool] = None
-    gender: Optional[str] = None
-    itf_link: Optional[str] = None
-    qualifying_start: Optional[datetime] = None
-    qualifying_end: Optional[datetime] = None
-    surface: Optional[str] = None
-    notes: Optional[str] = None
 
 def _parse_date(text: str) -> Optional[datetime]:
     if not text: return None
@@ -56,98 +29,90 @@ def _parse_date(text: str) -> Optional[datetime]:
 def _extract_two_dates(text: str):
     if not text: return (None, None)
     t = text.replace("–","-").replace("—","-")
-    pats = [r"(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})", r"(\d{1,2}/\d{1,2}/20\d{2})", r"(20\d{2}-\d{2}-\d{2})"]
+    m = re.search(r"\b(\d{1,2})\s*-\s*(\d{1,2})\s+([A-Za-z]{3,9})\s+(20\d{2})", t)
+    if m:
+        d1, d2, mon, yr = m.groups()
+        s = f"{int(d1)} {mon} {yr}"; e = f"{int(d2)} {mon} {yr}"
+        return _parse_date(s), _parse_date(e)
+    pats = [r"(\d{1,2}\s+[A-Za-z]{3,9}\s+20\d{2})", r"(20\d{2}-\d{2}-\d{2})", r"(\d{1,2}/\d{1,2}/20\d{2})"]
     found = []
     for p in pats: found += re.findall(p, t)
     if len(found) >= 2:
         return _parse_date(found[0]), _parse_date(found[1])
     return (None, None)
 
-def fetch_html(url: str, timeout: int = 25) -> str:
+def _iso3_to_country(iso3: str) -> Optional[str]:
+    if not iso3: return None
+    try:
+        c = pycountry.countries.get(alpha_3=iso3.upper())
+        return c.name if c else None
+    except Exception:
+        return None
+
+def _slug_to_city(slug: str) -> Optional[str]:
+    if not slug: return None
+    parts = slug.split("-")
+    if parts and re.match(r"j\d+", parts[0].lower()):
+        parts = parts[1:]
+    city = " ".join(parts)
+    return city.title() if city else None
+
+def _grade_from_slug_or_title(slug: str, title: str) -> Optional[str]:
+    m = re.search(r"j\d{2,3}", slug.lower()) or re.search(r"J\d{2,3}", title or "", re.I)
+    return m.group(0).upper() if m else None
+
+def _fetch_html(url: str, timeout: int = 25) -> str:
     r = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout)
     r.raise_for_status()
-    html = r.text
-    low = html.lower()
-    if any(p.lower() in low for p in BLOCK_PATTERNS):
-        html = render_page(url, timeout_ms=timeout*1000)
-    return html
+    return r.text
 
-def parse_tournament_html(html: str, source_url: str) -> TournamentModel:
+def scrape_public(url: str) -> Dict[str, Any]:
+    html = _fetch_html(url)
     soup = BeautifulSoup(html, "html.parser")
-    def txt(sel: str):
-        el = soup.select_one(sel); return el.get_text(strip=True) if el else None
-    def meta(prop: str):
-        el = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+
+    meta_title = soup.find("meta", attrs={"property":"og:title"})
+    name = (meta_title.get("content", "").strip() if meta_title and meta_title.get("content") else None)
+    if not name and soup.title: name = soup.title.get_text(strip=True)
+
+    m = re.search(r"/tournament/([^/]+)/([a-z]{3})/(\d{4})/([^/]+)/?", url, re.I)
+    city = country = grade = None
+    year = None
+    country_code = None
+    if m:
+        slug, cc, y, key = m.groups()
+        year = int(y)
+        country_code = cc.upper()
+        country = _iso3_to_country(country_code)
+        grade = _grade_from_slug_or_title(slug, name or "")
+        city = _slug_to_city(slug)
+
+    def meta(name_or_prop):
+        el = soup.find("meta", attrs={"property": name_or_prop}) or soup.find("meta", attrs={"name": name_or_prop})
         return el.get("content", "").strip() if el and el.get("content") else None
 
-    name=grade=category=city=country=venue=gender=surface=None
-    start_date=end_date=qualifying_start=qualifying_end=None
-    latitude=longitude=None; itf_link=None; has_physio=None
-
-    try:
-        for tag in soup.select("script[type='application/ld+json']"):
-            raw = (tag.string or "").strip()
-            if not raw: continue
-            data = json.loads(raw)
-            items = data if isinstance(data, list) else [data]
-            for obj in items:
-                if isinstance(obj, dict) and obj.get("@type") in ("SportsEvent","Event"):
-                    name = obj.get("name") or name
-                    start_date = _parse_date(obj.get("startDate") or "") or start_date
-                    end_date   = _parse_date(obj.get("endDate") or "") or end_date
-                    loc = obj.get("location") or {}
-                    if isinstance(loc, dict):
-                        venue = loc.get("name") or venue
-                        addr = loc.get("address") or {}
-                        if isinstance(addr, dict):
-                            city = addr.get("addressLocality") or city
-                            country = addr.get("addressCountry") or country
-    except Exception: pass
-
-    name = name or meta("og:title") or (soup.title.get_text(strip=True) if soup.title else None)
     desc = meta("description") or meta("og:description") or ""
-    if not start_date and not end_date:
-        d1, d2 = _extract_two_dates(desc)
-        start_date = d1 or start_date; end_date = d2 or end_date
+    s, e = _extract_two_dates(desc)
+    if not (s and e):
+        text = soup.get_text(" ", strip=True)
+        s2, e2 = _extract_two_dates(text)
+        s = s or s2; e = e or e2
 
-    grade = grade or txt("[data-field='grade'], .tournament-meta__grade")
-    category = category or txt("[data-field='category'], .tournament-meta__category")
-    surface = surface or txt("[data-field='surface'], .tournament-surface")
-    s_text = txt("[data-field='start-date'], [data-field='startDate'], .event-dates__start, .start-date")
-    e_text = txt("[data-field='end-date'], [data-field='endDate'], .event-dates__end, .end-date")
-    start_date = start_date or (_parse_date(s_text) if s_text else None)
-    end_date   = end_date   or (_parse_date(e_text) if e_text else None)
-    city = city or txt("[data-field='city'], .tournament-location__city")
-    country = country or txt("[data-field='country'], .tournament-location__country")
-    venue = venue or txt("[data-field='venue'], .tournament-venue")
+    surface = None
+    venue = None
 
-    if not itf_link:
-        a = soup.select_one("a[href*='itftennis.com']"); itf_link = a.get("href") if a else None
-
-    qs = txt("[data-field='qualifying-start'], .qualifying-start")
-    qe = txt("[data-field='qualifying-end'], .qualifying-end")
-    qualifying_start = _parse_date(qs) if qs else None
-    qualifying_end = _parse_date(qe) if qe else None
-
-    return TournamentModel(
-        name=name or "Unknown Tournament",
-        grade=grade, category=category,
-        start_date=start_date, end_date=end_date,
-        city=city, country=country, venue=venue,
-        latitude=latitude, longitude=longitude,
-        has_physio=has_physio, gender=gender,
-        itf_link=itf_link, qualifying_start=qualifying_start, qualifying_end=qualifying_end,
-        surface=surface, notes=f"Scraped from: {source_url}",
-    )
-
-def scrape_tournament(url: str) -> Dict[str, Any]:
-    html = fetch_html(url)
-    m = parse_tournament_html(html, url)
-    to_date = lambda dt: None if dt is None else dt.date()
-    return {"name": m.name, "grade": m.grade, "category": m.category,
-            "start_date": to_date(m.start_date), "end_date": to_date(m.end_date),
-            "city": m.city, "country": m.country, "venue": m.venue,
-            "latitude": m.latitude, "longitude": m.longitude, "has_physio": m.has_physio,
-            "gender": m.gender, "itf_link": m.itf_link,
-            "qualifying_start": to_date(m.qualifying_start), "qualifying_end": to_date(m.qualifying_end),
-            "surface": m.surface, "notes": m.notes}
+    data = {
+        "name": name or (grade or "ITF") + (f" {city}" if city else ""),
+        "grade": grade,
+        "year": year,
+        "city": city,
+        "country_code": country_code,
+        "country": country,
+        "start_date": s.date() if s else None,
+        "end_date": e.date() if e else None,
+        "surface": surface,
+        "venue": venue,
+        "itf_link": url,
+        "apply_url": url,
+        "notes": "Public scrape only; full details require IPIN login.",
+    }
+    return data
