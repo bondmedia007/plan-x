@@ -65,17 +65,34 @@ def _slug_to_city(slug: str) -> Optional[str]:
     city = " ".join(parts)
     return city.title() if city else None
 
+def _label_value(soup: BeautifulSoup, label: str) -> Optional[str]:
+    pat = re.compile(rf"^\s*{re.escape(label)}\s*:?\s*$", re.I)
+    for t in soup.find_all(string=pat):
+        p = t.parent
+        sib = p.find_next(string=lambda s: s and s.strip() and not pat.match(s.strip()))
+        if sib:
+            return " ".join(sib.strip().split())
+        link = p.find_next("a")
+        if link and link.get_text(strip=True):
+            return link.get_text(strip=True)
+    return None
+
 def scrape_public(url: str) -> Dict[str, Any]:
-    m = re.search(r"/tournament/([^/]+)/([a-z]{3})/(\d{4})/([^/]+)/?", url, re.I)
     slug = country_code = year = None
+    m = re.search(r"/tournament/([^/]+)/([a-z]{3})/(\d{4})/[^/]+/?", url, re.I)
     if m:
-        slug, cc, y, _ = m.groups()
+        slug, cc, y = m.groups()
         year = int(y); country_code = cc.upper()
     city = _slug_to_city(slug) if slug else None
     grade = _grade_from_slug(slug or "")
     country = _iso3_to_country(country_code) if country_code else None
 
     name = None; start_date = end_date = surface = venue = None
+    entry_deadline = withdrawal_deadline = sign_in_main = sign_in_qual = None
+    first_qualifying_day = first_main_day = None
+    td_name = td_email = official_ball = tournament_key = None
+    venue_name = venue_address = venue_website = None
+
     html = _fetch_html(url)
     if html:
         soup = BeautifulSoup(html, "html.parser")
@@ -86,7 +103,6 @@ def scrape_public(url: str) -> Dict[str, Any]:
         def meta(name_or_prop):
             el = soup.find("meta", attrs={"property": name_or_prop}) or soup.find("meta", attrs={"name": name_or_prop})
             return el.get("content", "").strip() if el and el.get("content") else None
-
         desc = meta("description") or meta("og:description") or ""
         s,e = _extract_two_dates(desc)
         if not (s and e):
@@ -95,6 +111,27 @@ def scrape_public(url: str) -> Dict[str, Any]:
             s = s or s2; e = e or e2
         start_date, end_date = s, e
 
+        entry_deadline       = _label_value(soup, "Entry deadline")
+        withdrawal_deadline  = _label_value(soup, "Withdrawal deadline")
+        sign_in_main         = _label_value(soup, "Single Main Draw Sign-in date/time")
+        sign_in_qual         = _label_value(soup, "Singles Qualifying sign-in date/time")
+        first_qualifying_day = _label_value(soup, "First day of Singles Qualifying")
+        first_main_day       = _label_value(soup, "First day of Singles Main Draw")
+        td_name              = _label_value(soup, "Tournament Director name")
+        td_email             = _label_value(soup, "Tournament Director email")
+        official_ball        = _label_value(soup, "Official ball")
+        tournament_key       = _label_value(soup, "Tournament key")
+        venue_name           = _label_value(soup, "Venue Name")
+        venue_address        = _label_value(soup, "Venue Address")
+        venue_website        = _label_value(soup, "Venue Website")
+
+        if not venue_name:
+            vh = soup.find(string=re.compile(r"^\s*Tournament Venue\s*$", re.I))
+            if vh:
+                sec = vh.parent
+                cand = sec.find_next(string=lambda s: s and s.strip())
+                if cand: venue_name = " ".join(cand.strip().split())
+
     return {
         "name": name or (grade or "ITF") + (f" {city}" if city else ""),
         "grade": grade, "year": year,
@@ -102,6 +139,19 @@ def scrape_public(url: str) -> Dict[str, Any]:
         "start_date": start_date.date() if start_date else None,
         "end_date": end_date.date() if end_date else None,
         "surface": surface, "venue": venue,
+        "entry_deadline": entry_deadline,
+        "withdrawal_deadline": withdrawal_deadline,
+        "sign_in_main": sign_in_main,
+        "sign_in_qual": sign_in_qual,
+        "first_qualifying_day": first_qualifying_day,
+        "first_main_day": first_main_day,
+        "tournament_director_name": td_name,
+        "tournament_director_email": td_email,
+        "official_ball": official_ball,
+        "tournament_key": tournament_key,
+        "venue_name": venue_name,
+        "venue_address": venue_address,
+        "venue_website": venue_website,
         "itf_link": url, "apply_url": url,
         "notes": "Public scrape (URL fallback when page body is blocked).",
     }

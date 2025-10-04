@@ -14,6 +14,7 @@ class Tournament(Base):
     __tablename__ = "tournaments"
     id = Column(Integer, primary_key=True, index=True)
 
+    # Core public fields
     name = Column(String(255), nullable=False)
     grade = Column(String(50), nullable=True)
     year = Column(Integer, nullable=True)
@@ -28,11 +29,28 @@ class Tournament(Base):
 
     itf_link = Column(Text, nullable=False)
     apply_url = Column(Text, nullable=False)
+
+    # Extended public details
+    entry_deadline           = Column(String(255), nullable=True)
+    withdrawal_deadline      = Column(String(255), nullable=True)
+    sign_in_main             = Column(String(255), nullable=True)
+    sign_in_qual             = Column(String(255), nullable=True)
+    first_qualifying_day     = Column(String(255), nullable=True)
+    first_main_day           = Column(String(255), nullable=True)
+    tournament_director_name = Column(String(255), nullable=True)
+    tournament_director_email= Column(String(255), nullable=True)
+    official_ball            = Column(String(255), nullable=True)
+    tournament_key           = Column(String(255), nullable=True)
+    venue_name               = Column(String(255), nullable=True)
+    venue_address            = Column(Text,   nullable=True)
+    venue_website            = Column(String(512), nullable=True)
+
     notes = Column(Text, nullable=True)
 
     __table_args__ = (UniqueConstraint("itf_link", name="uq_itf_link_unique"),)
 
-def init_db(): Base.metadata.create_all(bind=engine)
+def init_db():
+    Base.metadata.create_all(bind=engine)
 
 def upsert_by_link(session, data: dict):
     obj = session.query(Tournament).filter(Tournament.itf_link==data["itf_link"]).first()
